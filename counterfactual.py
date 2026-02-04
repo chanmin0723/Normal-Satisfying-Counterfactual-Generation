@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from .utils import pooled_latent_mu
@@ -17,30 +16,24 @@ def optimize_latent_counterfactual(
     lr: float = 1e-2,
     lam_prox: float = 0.1,
     lam_flow: float = 0.1,
+    id_net=None,
+    lam_id: float = 0.0,
     target: str = "norm",
 ):
-    """
-    Latent-space counterfactual optimization (minimal public version).
-
-    Inputs
-      - x12_norm: [B,12,T] (already normalized)
-      - y_enc:    [B] encoder condition ids
-      - enc/dec:  conditional VAE modules
-      - clf_mi/clf_norm: classifier heads that accept waveform-space features
-      - flow_norm: RealNVP density model for "normal" embeddings (vector space)
-      - target: "norm" or "mi"
-
-    Returns
-      - x_cf: [B,12,T] reconstructed counterfactual
-      - z_cf: [B,z_ch,Lz] optimized latent map
-    """
     enc.eval()
     dec.eval()
+    id_net = id_net or (lambda x: x)
+
     z0, _ = enc(x12_norm, y_enc)
-    z = z0.detach().clone()
-    z.requires_grad_(True)
+    z = z0.detach().clone().requires_grad_(True)
 
     opt = torch.optim.Adam([z], lr=lr)
+
+    with torch.no_grad():
+        x_orig = dec(z0, y_enc)
+        id_orig = id_net(x_orig)
+
+    use_id = lam_id > 0
 
     for _ in range(steps):
         x_hat = dec(z, y_enc)
@@ -64,6 +57,9 @@ def optimize_latent_counterfactual(
         loss_prox = F.mse_loss(z, z0)
 
         loss = loss_target + lam_flow * flow_nll + lam_prox * loss_prox
+
+        if use_id:
+            loss = loss + lam_id * F.mse_loss(id_net(x_hat), id_orig)
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
